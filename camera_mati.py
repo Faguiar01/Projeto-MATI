@@ -1,21 +1,28 @@
 # ============================================================
 # PROJETO MATI — Monitoramento Avançado do Trabalhador Inteligente
 # Arquivo: camera_mati.py
-# Versão 3.0 — Detecção de Rosto + Olhos + Contador em Tempo Real
+# Versão 4.0 — Detecção de Fadiga + Registro Automático em CSV
 # ============================================================
+
+# --- IMPORTAÇÕES ---
 
 import cv2
 
-# --- ETAPA 1: CARREGAR OS DOIS CLASSIFICADORES ---
+# "csv" é uma biblioteca NATIVA do Python (não precisa de pip install).
+# Ela oferece ferramentas para ler e ESCREVER arquivos .csv de forma segura,
+# lidando automaticamente com vírgulas dentro de texto, aspas, etc.
+import csv
 
-# Classificador de rosto (já conhecido da versão anterior)
+# "datetime" também é nativa do Python.
+# O módulo "datetime" dentro da biblioteca "datetime" (sim, mesmo nome)
+# permite capturar e formatar data e hora do sistema operacional.
+from datetime import datetime
+
+# --- ETAPA 1: CARREGAR CLASSIFICADORES ---
+
 classificador_rosto = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
+classificador_olho  = cv2.CascadeClassifier("haarcascade_eye.xml")
 
-# Classificador de olhos: mesmo princípio do de rosto, mas treinado
-# com padrões específicos de olhos (formato amendoado, região escura da íris, etc.)
-classificador_olho = cv2.CascadeClassifier("haarcascade_eye.xml")
-
-# Verificações de segurança para os dois arquivos
 if classificador_rosto.empty():
     print("ERRO: haarcascade_frontalface_default.xml não encontrado.")
     exit()
@@ -26,7 +33,69 @@ if classificador_olho.empty():
 
 print("Classificadores carregados com sucesso!")
 
-# --- ETAPA 2: CONECTAR À WEBCAM ---
+# --- ETAPA 2: CONFIGURAÇÕES DO LOG ---
+
+# Nome do arquivo CSV onde os eventos serão registrados.
+ARQUIVO_CSV = "dados_mati.csv"
+
+# BPM fixo por enquanto (será substituído por leitura real futuramente).
+BPM_FIXO = 80
+
+# Peças produzidas: mantemos o último valor registrado.
+# Começa em 0 e será atualizado conforme o sistema evoluir.
+pecas_produzidas = 0
+
+# --- [NOVO] VARIÁVEIS DE CONTROLE DA TRAVA ANTI-FLOOD ---
+#
+# O problema sem trava: o loop roda ~30 vezes por segundo.
+# Sem controle, um alerta de 10 segundos gravaria ~300 linhas no CSV.
+# A solução: guardamos o MOMENTO em que salvamos pela última vez,
+# e só permitimos um novo save se já passaram 5 segundos desde o anterior.
+#
+# datetime.min é o menor valor possível de data/hora no Python.
+# Usamos como valor inicial para garantir que o PRIMEIRO alerta
+# sempre seja salvo imediatamente (qualquer hora atual será maior que datetime.min).
+ultimo_registro = datetime.min
+
+# Intervalo mínimo entre registros: 5 segundos.
+# timedelta representa uma "duração de tempo" — aqui, 5 segundos.
+from datetime import timedelta
+INTERVALO_MINIMO = timedelta(seconds=5)
+
+# --- ETAPA 3: FUNÇÃO PARA SALVAR NO CSV ---
+
+def salvar_evento_fadiga(horario, bpm, status, pecas):
+    # SOBRE O MODO 'a' (APPEND — ACRESCENTAR):
+    #
+    # Quando abrimos um arquivo com open(), o segundo argumento define o MODO:
+    #
+    #   'w' (write)  → APAGA tudo e começa do zero. PERIGOSO para nosso caso.
+    #   'r' (read)   → Apenas leitura. Não permite escrever nada.
+    #   'a' (append) → Abre o arquivo e posiciona o cursor NO FINAL.
+    #                  Tudo que escrevemos é ADICIONADO após o conteúdo existente.
+    #                  Se o arquivo não existir, ele é CRIADO automaticamente.
+    #
+    # Para o MATI, 'a' é perfeito: cada evento de fadiga vira uma nova linha
+    # sem jamais apagar os registros anteriores do dia.
+    #
+    # newline='' é necessário no Windows para o csv.writer não inserir
+    # linhas em branco extras entre cada registro gravado.
+    # encoding='utf-8' garante que acentos e caracteres especiais sejam salvos corretamente.
+    with open(ARQUIVO_CSV, mode='a', newline='', encoding='utf-8') as arquivo:
+
+        # csv.writer() cria um "escritor" que formata os dados automaticamente
+        # no padrão CSV: separa com vírgulas, adiciona aspas quando necessário, etc.
+        escritor = csv.writer(arquivo)
+
+        # escritor.writerow() escreve UMA LINHA no arquivo.
+        # Passamos uma lista Python: cada item vira uma coluna no CSV.
+        # A ordem deve ser a mesma do cabeçalho: Horario, BPM, Status_Rosto, Pecas_Produzidas
+        escritor.writerow([horario, bpm, status, pecas])
+
+    # Confirma no terminal que o registro foi feito (útil para debug)
+    print(f"[LOG] Evento salvo: {horario} | {status}")
+
+# --- ETAPA 4: CONECTAR À WEBCAM ---
 
 cap = cv2.VideoCapture(0)
 
@@ -36,7 +105,7 @@ if not cap.isOpened():
 
 print("Câmera iniciada! Pressione 'q' para encerrar.")
 
-# --- ETAPA 3: LOOP PRINCIPAL ---
+# --- ETAPA 5: LOOP PRINCIPAL ---
 
 while True:
 
@@ -46,10 +115,8 @@ while True:
         print("ERRO: Falha ao capturar o frame.")
         break
 
-    # Converte o frame completo para cinza (necessário para os classificadores)
     frame_cinza = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Detecta rostos no frame inteiro (igual à versão anterior)
     rostos_detectados = classificador_rosto.detectMultiScale(
         frame_cinza,
         scaleFactor=1.1,
@@ -57,59 +124,15 @@ while True:
         minSize=(30, 30)
     )
 
-    # Variável que vai acumular a quantidade de olhos encontrados neste frame.
-    # Começa em 0 a cada frame para sempre refletir o estado atual.
     total_olhos_frame = 0
-
-    # --- ETAPA 4: PARA CADA ROSTO, CRIAR A ROI E BUSCAR OLHOS ---
 
     for (x, y, w, h) in rostos_detectados:
 
-        # Desenha o retângulo verde ao redor do rosto (mantido da versão anterior)
         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-        # --- [NOVO] CRIANDO A ROI — REGIÃO DE INTERESSE ---
-        #
-        # CONCEITO FUNDAMENTAL: Por que não buscar os olhos no frame inteiro?
-        #
-        # Imagine que o frame tem 640x480 = 307.200 pixels para analisar.
-        # Um rosto detectado tem talvez 150x150 = 22.500 pixels.
-        # Buscar olhos só dentro do rosto significa analisar 22.500 pixels
-        # em vez de 307.200 — isso é ~14x menos trabalho para o processador.
-        #
-        # Além disso, evita "falsos positivos": sem a ROI, o classificador
-        # de olhos poderia detectar padrões semelhantes a olhos em outros
-        # objetos do cenário (botões de camisa, luminárias, etc.).
-        #
-        # COMO A ROI FUNCIONA TECNICAMENTE:
-        # Um frame no OpenCV é uma matriz numpy (grade de números).
-        # Cada pixel é acessado por [linha, coluna] = [y, x].
-        # A notação [y : y+h, x : x+w] é um "fatiamento" (slice) dessa matriz,
-        # como recortar um pedaço de uma planilha Excel.
-        # Não criamos uma cópia: roi_gray e roi_color são "janelas"
-        # que apontam para a MESMA memória do frame original.
-        # Então quando desenhamos na roi_color, o frame original é atualizado.
-
-        # roi_gray: recorte em CINZA da área do rosto.
-        # Usado como ENTRADA para o classificador detectar os olhos
-        # (o classificador só aceita imagens em escala de cinza).
-        # [y : y+h] → seleciona as LINHAS  do topo até a base do rosto
-        # [x : x+w] → seleciona as COLUNAS da esquerda até a direita do rosto
-        roi_gray = frame_cinza[y : y + h, x : x + w]
-
-        # roi_color: recorte COLORIDO da mesma área do rosto.
-        # Usado como SAÍDA para desenhar os círculos dos olhos com cor.
-        # Como é uma "janela" do frame original, desenhar aqui
-        # aparece automaticamente no frame que será exibido na tela.
+        roi_gray  = frame_cinza[y : y + h, x : x + w]
         roi_color = frame[y : y + h, x : x + w]
 
-        # --- [NOVO] DETECTAR OLHOS DENTRO DA ROI ---
-
-        # Mesmo método detectMultiScale, mas agora aplicado à roi_gray
-        # (que é apenas a região do rosto, não o frame inteiro).
-        # scaleFactor menor (1.05) pois os olhos são menores e precisam
-        # de uma varredura mais fina para serem encontrados com precisão.
-        # minSize menor (20x20) pois olhos ocupam menos pixels que um rosto.
         olhos_detectados = classificador_olho.detectMultiScale(
             roi_gray,
             scaleFactor=1.05,
@@ -117,73 +140,75 @@ while True:
             minSize=(20, 20)
         )
 
-        # Acumula a contagem de olhos encontrados neste rosto
         total_olhos_frame += len(olhos_detectados)
 
-        # --- [NOVO] DESENHAR CÍRCULOS NOS OLHOS DETECTADOS ---
-
-        # Para cada olho, recebemos suas coordenadas RELATIVAS à ROI.
-        # ex: se o rosto começa em x=100 no frame, e o olho está em ex=30
-        # dentro da ROI, o olho está em x=130 no frame original.
-        # Mas como roi_color já é a janela correta do frame, usamos
-        # as coordenadas diretamente sem precisar somar x e y manualmente.
         for (ex, ey, ew, eh) in olhos_detectados:
-
-            # Calcula o centro do círculo:
-            # Centro X = posição X do olho + metade da largura
-            # Centro Y = posição Y do olho + metade da altura
-            centro_x = ex + ew // 2  # // é divisão inteira (sem decimais)
+            centro_x = ex + ew // 2
             centro_y = ey + eh // 2
-
-            # Calcula o raio como metade da menor dimensão do retângulo do olho
-            # para que o círculo caiba bem dentro do espaço detectado
-            raio = min(ew, eh) // 2
-
-            # cv2.circle() desenha um círculo sobre a roi_color.
-            # Parâmetros:
-            #   roi_color        → imagem onde desenhar (janela do frame original)
-            #   (centro_x, centro_y) → ponto central do círculo
-            #   raio             → raio em pixels
-            #   (255, 0, 0)      → cor em BGR: Azul puro
-            #   2                → espessura da linha (-1 preencheria o círculo)
+            raio     = min(ew, eh) // 2
             cv2.circle(roi_color, (centro_x, centro_y), raio, (255, 0, 0), 2)
 
-    # --- ETAPA 5: EXIBIR O CONTADOR DE OLHOS NA TELA ---
+    # --- EXIBIR CONTADOR DE OLHOS ---
 
-    # Monta o texto do contador com o total de olhos encontrados neste frame
-    texto_contador = f"Olhos Detectados: {total_olhos_frame}"
-
-    # cv2.putText() para escrever o contador no canto superior esquerdo da tela.
-    # A posição (10, 30) significa: 10px da borda esquerda, 30px da borda superior.
     cv2.putText(
         frame,
-        texto_contador,
-        (10, 30),                    # posição fixa no canto superior esquerdo
+        f"Olhos Detectados: {total_olhos_frame}",
+        (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,                         # tamanho da fonte levemente maior para leitura fácil
-        (255, 255, 255),             # cor branca para contrastar com qualquer fundo
+        0.8,
+        (255, 255, 255),
         2
     )
 
-    # --- ETAPA 6: LÓGICA BÁSICA DE ESTADO DE FADIGA ---
+    # --- [NOVO] LÓGICA DE ALERTA + GRAVAÇÃO COM TRAVA ANTI-FLOOD ---
 
-    # Se nenhum olho foi detectado no rosto (0 olhos visíveis),
-    # pode indicar que o trabalhador está com os olhos fechados.
-    # Exibimos um alerta visual em VERMELHO na tela.
-    # ATENÇÃO: Esta é uma lógica INICIAL e simples. Um olho fora do ângulo
-    # da câmera também pode resultar em 0 detecções — refinamos isso nas próximas fases.
+    # Condição de fadiga: rosto visível MAS olhos não detectados
     if len(rostos_detectados) > 0 and total_olhos_frame == 0:
+
+        # Exibe o alerta visual vermelho na tela (igual à versão anterior)
         cv2.putText(
             frame,
             "ATENCAO: OLHOS NAO DETECTADOS",
-            (10, 65),                # posição abaixo do contador de olhos
+            (10, 65),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
-            (0, 0, 255),             # BGR: Vermelho
+            (0, 0, 255),
             2
         )
 
-    # Exibe o frame final com todos os desenhos
+        # --- VERIFICAÇÃO DA TRAVA DE TEMPO ---
+        #
+        # datetime.now() retorna o momento EXATO atual (data + hora + microssegundos).
+        # Ex: 2025-06-10 14:35:22.847291
+        agora = datetime.now()
+
+        # Calculamos quanto tempo passou desde o último registro.
+        # Subtrair dois objetos datetime resulta em um timedelta (duração).
+        # Se essa duração for MAIOR que 5 segundos (INTERVALO_MINIMO),
+        # liberamos um novo registro. Caso contrário, ignoramos este frame.
+        tempo_desde_ultimo = agora - ultimo_registro
+
+        if tempo_desde_ultimo > INTERVALO_MINIMO:
+
+            # Formata o horário como string legível para salvar no CSV.
+            # strftime = "string format time"
+            # %Y = ano com 4 dígitos | %m = mês | %d = dia
+            # %H = hora (24h)        | %M = minuto | %S = segundo
+            horario_formatado = agora.strftime("%Y-%m-%d %H:%M:%S")
+
+            # Chama a função que grava a linha no CSV
+            salvar_evento_fadiga(
+                horario=horario_formatado,
+                bpm=BPM_FIXO,
+                status="Fadiga Detectada",
+                pecas=pecas_produzidas
+            )
+
+            # Atualiza o marcador de tempo para o momento atual.
+            # Isso "reinicia o cronômetro" da trava.
+            ultimo_registro = agora
+
+    # Exibe o frame com todos os elementos desenhados
     cv2.imshow("MATI - Monitoramento de Rosto", frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
