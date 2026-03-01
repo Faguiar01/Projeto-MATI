@@ -1,0 +1,12 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+.DS_Store
+Thumbs.db
+*.log
+dados_mati.csv
+*.csv
