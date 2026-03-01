@@ -18,11 +18,11 @@ from scipy.spatial import distance       # calcula distância euclidiana entre p
 
 # mp.solutions contém todos os módulos prontos do MediaPipe.
 # face_mesh é o módulo que detecta 468 pontos precisos no rosto.
-mp_face_mesh = mp.solutions.face_mesh
+import mediapipe.python.solutions.face_mesh as mp_face_mesh
 
 # mp.solutions.drawing_utils oferece funções prontas para desenhar
 # os landmarks (pontos) e conexões do rosto na tela.
-mp_desenho = mp.solutions.drawing_utils
+import mediapipe.python.solutions.drawing_utils as mp_desenho
 
 # FaceMesh() inicializa o modelo de detecção.
 # Parâmetros importantes:
