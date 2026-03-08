@@ -1,90 +1,95 @@
-# ============================================================
-# PROJETO MATI — dashboard.py
-# Versão 6.1 — Painel de Gestão com Identificação de Operador
-# ============================================================
-
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 import time
+import os
+import subprocess
+from datetime import datetime
 
-# 1. CONFIGURAÇÃO DA PÁGINA
-st.set_page_config(page_title="Dashboard MATI v6.1", layout="wide")
+# Configuração da Página
+st.set_page_config(page_title="MATI Dashboard Executivo", layout="wide")
 
-# 2. FUNÇÃO DE LEITURA DE DADOS
-ARQUIVO_CSV = "dados_mati.csv"
+# --- CABEÇALHO COM LOGO E TÍTULO ---
+col_logo, col_titulo = st.columns([1, 4])
 
-def carregar_dados():
-    try:
-        df = pd.read_csv(ARQUIVO_CSV)
-        return df.tail(100)
-    except Exception as e:
-        st.error(f"Erro técnico ao tentar ler o CSV: {e}")
-        return pd.DataFrame()
+with col_logo:
+    if os.path.exists("logo_mati.png"):
+        st.image("logo_mati.png", width=150)
+    else:
+        st.markdown("### [ MATI ]")
 
-# 3. INTERFACE PRINCIPAL
-st.title("📊 MATI: Painel de Gestão Humanizada (v6.1)")
-st.markdown("Monitoramento em tempo real de Atenção, Tensão e Interação no chão de fábrica.")
+with col_titulo:
+    st.title("Monitoramento de Atenção, Tensão e Interação")
+    st.markdown("### Gestão Humanizada & Indústria 5.0")
+
 st.markdown("---")
 
-# O st.empty() cria uma "caixa" vazia na tela que podemos atualizar em loop
+ARQUIVO_CSV = 'dados_mati.csv'
+
+# --- BARRA LATERAL (CONTROLE GERAL) ---
+st.sidebar.header("Central de Comando")
+if st.sidebar.button("📄 GERAR RELATÓRIO PDF (LAUDO)"):
+    try:
+        # Chama o script de relatório que você já tem calibrado
+        subprocess.run(["python", "gerar_relatorio.py"], check=True)
+        st.sidebar.success("✅ Laudo_MATI.pdf gerado com sucesso!")
+        
+        # Opcional: Abrir o PDF automaticamente (Windows)
+        os.startfile("Laudo_MATI.pdf")
+    except Exception as e:
+        st.sidebar.error(f"Erro ao gerar PDF: {e}")
+
+st.sidebar.markdown("---")
+st.sidebar.info("O sistema está capturando dados do sensor rPPG e EAR em tempo real.")
+
+# --- CORPO DO DASHBOARD ---
 placeholder = st.empty()
 
-# 4. LOOP DE ATUALIZAÇÃO EM TEMPO REAL
 while True:
-    df = carregar_dados()
-    
-    # Atualiza todo o conteúdo dentro da "caixa" a cada ciclo
-    with placeholder.container():
-        if df.empty:
-            st.warning("⏳ Aguardando dados... Certifique-se de que o script 'camera_mati.py' está rodando, o operador foi identificado e o CSV foi gerado.")
-        else:
-            # --- SEÇÃO A: KPIs (Indicadores Principais) ---
-            # NOVO: Lendo o nome do colaborador da última linha gravada
-            colaborador_atual = str(df['colaborador'].iloc[-1])
-            
-            # Mudamos para 4 colunas para acomodar o nome do operador
-            col1, col2, col3, col4 = st.columns(4)
-            
-            # Extraindo os dados mais recentes (última linha) ou médias
-            ultimo_bpm = df['bpm'].iloc[-1]
-            ear_medio = df['ear'].mean()
-            emocao_predominante = df['emocao'].mode()[0]
-            
-            with col1:
-                st.metric("👤 Operador Atual", colaborador_atual)
-            with col2:
-                st.metric("💓 Freq. Cardíaca (Atual)", f"{ultimo_bpm} bpm")
-            with col3:
-                st.metric("👁️ Atenção Média (EAR)", f"{ear_medio:.2f}")
-            with col4:
-                st.metric("🎭 Humor Predominante", emocao_predominante)
-            
-            st.markdown("---")
-            
-            # --- SEÇÃO B: GRÁFICOS DE TENDÊNCIA ---
-            col_grafico1, col_grafico2 = st.columns(2)
-            
-            # Define a coluna 'horario' como o eixo X dos gráficos
-            df_grafico = df.set_index('horario')
-            
-            with col_grafico1:
-                st.subheader("Variação de Atenção (Fadiga)")
-                st.markdown("Quedas bruscas indicam micro-sonos ou desatenção.")
-                st.line_chart(df_grafico['ear'], color="#00a4d6")
+    if os.path.exists(ARQUIVO_CSV):
+        try:
+            df = pd.read_csv(ARQUIVO_CSV)
+            if not df.empty:
+                # Dados atuais
+                operador = str(df['colaborador'].iloc[-1]).upper()
+                ultimo_ear = df.iloc[-1]['ear']
+                ultimo_bpm = df.iloc[-1]['bpm']
+                ultima_emocao = df.iloc[-1]['emocao']
+                status_fadiga = df.iloc[-1]['status_fadiga']
                 
-            with col_grafico2:
-                st.subheader("Eletrocardiograma Simulado (BPM)")
-                st.markdown("Picos vermelhos podem indicar estresse ou esforço excessivo.")
-                st.line_chart(df_grafico['bpm'], color="#ff4b4b")
-                
-            st.markdown("---")
+                df_recente = df.tail(60)
+
+                with placeholder.container():
+                    st.subheader(f"👤 Operador: {operador}")
+                    
+                    # KPIs
+                    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+                    kpi1.metric("Atenção (EAR)", f"{ultimo_ear:.3f}")
+                    kpi2.metric("Frequência (BPM)", f"{int(ultimo_bpm)} BPM")
+                    kpi3.metric("Estado", ultima_emocao)
+                    
+                    cor_status = "🔴 FADIGA" if status_fadiga == "Fadiga" else "🟢 NORMAL"
+                    kpi4.metric("Status Segurança", cor_status)
+
+                    # Gráficos
+                    g1, g2 = st.columns(2)
+                    
+                    with g1:
+                        fig_ear = go.Figure()
+                        fig_ear.add_trace(go.Scatter(x=df_recente['horario'], y=df_recente['ear'], name="EAR", line=dict(color='cyan')))
+                        fig_ear.update_layout(title="Nível de Atenção Visual", template="plotly_dark", height=300)
+                        st.plotly_chart(fig_ear, use_container_width=True)
+                        
+                    with g2:
+                        fig_rppg = go.Figure()
+                        fig_rppg.add_trace(go.Scatter(x=df_recente['horario'], y=df_recente['sinal_verde'], name="Sinal rPPG", line=dict(color='lime')))
+                        fig_rppg.update_layout(title="Onda de Pulso (Sensor Óptico)", template="plotly_dark", height=300)
+                        st.plotly_chart(fig_rppg, use_container_width=True)
             
-            # --- SEÇÃO C: DISTRIBUIÇÃO DE HUMOR ---
-            st.subheader(f"Distribuição de Emoções no Turno: {colaborador_atual}")
-            # Conta quantas vezes cada emoção apareceu
-            contagem_emocoes = df['emocao'].value_counts()
-            # Gera um gráfico de barras verde
-            st.bar_chart(contagem_emocoes, color="#4caf50")
+            time.sleep(1)
             
-    # Pausa de 2 segundos antes de ler o CSV novamente
-    time.sleep(2)
+        except:
+            pass
+    else:
+        st.error("Aguardando arquivo de dados...")
+        time.sleep(2)
